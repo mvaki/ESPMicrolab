@@ -1,0 +1,521 @@
+//Changelog
+//Added restart
+//Added APStart
+//Added APAddSensor
+//Added APGetValue
+
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266WebServer.h>
+
+
+//Setup the connection defaults
+#ifndef DefaultSSID
+#define DefaultSSID "Microlab_IoT"
+#define DefaultPassword  "microlab"
+#define DefaultHttpPort 80 //int
+#define DefaultHostIP "192.168.4.1"
+#endif
+
+
+String ssid=DefaultSSID;
+String password=DefaultPassword;
+String hostIP=DefaultHostIP;
+int httpPort=DefaultHttpPort;
+String response="";
+int baud=9600;
+String teamname="No team";
+String url =  "http://" + hostIP + "/api/students/"+teamname+"/sensors";
+String sensorName[10]={"","","","","","","","","",""}; //up to 10 sensors can be added
+String sensorValue[10]={"","","","","","","","","",""}; //the value of each sensor is stored here
+int sensorCount=0;
+//String payload_pattern = "[{\"name\": \"Temperature\",\"value\": $temperature$},{\"name\":\"Humidity\",\"value\": $humidity$},{\"name\": \"Counter\",\"value\": $counter$}]";
+// Received string should be [{"name": "Temperature","value": 36.0},{"name": "Humidity","value": 57.0}]
+bool ConnectionStarted=false;
+bool serverOnline=false;
+String receivedPayload="[]",inputString="",isReady="false";
+bool debug=false,LEDState=false;
+bool newValues=false;
+//AccessPoint additions
+//const char *APssid = DefaultSSID; //"poopssid";
+//const char *APpassword = DefaultPassword; //"pingu4prez";
+WiFiServer server(httpPort);
+bool serverMode=false;
+//client for access point additions
+WiFiClient client;
+//const char * host = "192.168.4.1";
+//const int httpPort = 80;
+ /* /
+*/
+  
+//WiFi.begin(ssid, password);
+
+void setup() {
+  pinMode(2,OUTPUT); //testing LED is connected on 2
+  Serial.begin(baud);
+  Serial.print("\nESP8266: Waiting for command\n");
+  
+}
+
+void loop() {
+  ReadData(); //Reads Data
+  LEDState=!LEDState; //The program gets here when newline is read to change the LED state
+  digitalWrite(2,LEDState);
+}
+
+
+void ReadData(){//read and decode one line of data
+  ReadDataLine();
+  searchForCommand(inputString);
+  inputString="";
+}
+
+
+void ReadDataLine(){//read one line of data
+  bool ReadLine=false;
+  while(!ReadLine){
+    if(serverOnline) {
+      WiFiClient client = server.available();
+      if(client){
+        if(client.connected()) serverReceiveData(client); //this needs to be here to be excecuted all the time
+        client.stop();
+      }
+      
+    }
+    while(Serial.available()>0){
+      char inputChar=Serial.read();
+      inputString+=inputChar;
+      if(inputChar=='\n') ReadLine=true;  
+    }
+  }
+}
+
+
+
+int ESP8266connectWiFi(String ssid,String password,bool STAMode){ //Handles the WiFi connection
+  if(WiFi.status() == WL_CONNECTED) {
+    if(debug) Serial.print("ESP8266: Connected\n");
+    else Serial.print("\"Success\"\n");
+    return 1;
+  }
+  int timecounter=0;
+  if(STAMode) WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid,password);
+  if(debug) Serial.print("ESP8266: Connecting");
+  while (WiFi.status() != WL_CONNECTED) { //Check for the connection
+    delay(2000);
+    timecounter++;
+    if(debug) Serial.print(".");
+    if(timecounter>10){
+      timecounter=0;
+      if(debug) Serial.print("ESP8266: Could not connect to network. Please check your credentials\n"); 
+      else Serial.print("\"Fail\"\n");
+      return 0;
+    }
+  }
+  //Serial.println();
+  if(debug) Serial.print("Connected\n");
+  else Serial.print("\"Success\"\n");
+  return 1;
+}
+
+
+String getValue(String DataString, String valueName, char charBeforeValue, char charAfterValue){ //finds the Value in a string formated valueName "Value"
+   int startIndex,endIndex=0;
+   startIndex=DataString.indexOf(valueName,startIndex);
+   if(startIndex>=0){
+    startIndex=DataString.indexOf(charBeforeValue,startIndex+valueName.length());
+    if(valueName=="url") endIndex=DataString.lastIndexOf(charAfterValue); //url may contain "" inside so find last index
+    else endIndex=DataString.indexOf(charAfterValue,startIndex+1);
+    if(startIndex>=0 && endIndex>startIndex){
+      //if(endIndex=startIndex+1) Serial.println("\"Success\""); //if string is really empty print success
+      return DataString.substring(startIndex+1,endIndex);
+    }else {
+      if(debug) Serial.print("ESP8266: Wrong data format for " + valueName + '\n');
+      else Serial.print("\"Fail\"\n");
+    }
+    return "noValueFound";
+   }
+   else return "noValueFound";
+}
+
+void serverReceiveData(WiFiClient client){ //Get data from the server
+  String message="",requestedData="";//,temp="";
+  String incoming = client.readStringUntil('\n');
+  client.flush();
+  for(int i=0;i<sensorCount;++i){
+    String temp=getValue(incoming,sensorName[i],'=',',');
+    if(temp=="request") requestedData+=sensorName[i]+"="+sensorValue[i]+","; //if value is requested
+    else if(temp!="noValueFound"){
+      sensorValue[i]=temp; //else value is received
+      newValues=true;
+    }
+    message+=sensorName[i]+"="+sensorValue[i]+",";
+  }
+  if(requestedData!="") {
+    if(debug) Serial.print("ESP8266: answering:" +requestedData+"\n");
+    //server.send(200, "text/plain", "Data OK "+requestedData+"\n");
+    //server.send(200, "text/plain", "Data OK ");
+    //server.send(200, "text/plain", "Data OK FML\n ");
+    client.print(requestedData+"\n");
+  }
+  else client.print("Data OK\n");
+  //server.send(200, "text/html", "Data OK\n");
+  if(debug) Serial.print("ESP8266:Values: "+message+"\n" );
+  else Serial.print("ServedClient\n");
+   /*for (int i = 0; i < server.args(); i++) {
+    message += “Arg nº” + (String)i + ” –> “;   //Include the current iteration value
+    message += server.argName(i) + “: “;     //Get the name of the parameter
+    message += server.arg(i) + “\n”;              //Get the value of the parameter
+    } */ //alternative
+}
+
+inline void clientTransmitData(String url,String hostIP,int port){
+  // This will send the request to the server
+  String toSend="";
+  for(int i=0;i<sensorCount;++i){
+        //if(sensorName[i]=="") break; //no need since we have sensorCount
+        toSend+=sensorName[i];
+        toSend+="=";
+        toSend+=sensorValue[i];
+        toSend+=",";
+        //if(i!=(sensorCount-1))url+="&";
+      }
+  if(debug) Serial.print("ESP8266: Sending to server: "+toSend+"\n");
+  client.print(toSend+"\n");
+  unsigned long timeout = millis();
+  while (client.available() == 0) {
+    if (millis() - timeout > 5000) {
+      if(debug) Serial.print("ESP8266: Client Timeout\n");
+      else Serial.print("\"Fail\"\n");
+      client.stop();
+      return;
+    }
+  }
+  while(client.available()) {
+    String line = client.readStringUntil('\n'); //read and print response
+    if(line=="Data OK") break;
+    //line += client.readStringUntil('\n'); //read another line because i feel lucky
+    for(int i=0; i<sensorCount;++i){
+      String temp=getValue(line,sensorName[i],'=',',');
+      if(temp!="noValueFound"){
+        sensorValue[i]=temp; //else value is received
+        //newValues=true;
+      }
+    }
+    
+    if(debug)Serial.print("ESP8266: Received from server:"+line+"\n");
+    else Serial.print("\"Success\"\n");
+    client.flush();
+    client.stop();
+  }
+
+}
+
+inline void transmitData(String url,String hostIP,String mypayload){ //Sends Data to the Server
+  if(WiFi.status()== WL_CONNECTED){ 
+          HTTPClient http;
+          //If something changes in the url here it should be also changed in 
+          //the configuration command
+          //url =  "http://" + hostIP + "/api/students/"+teamname+"/sensors/?isReady="+isReady;
+          http.begin(url);
+          http.addHeader("Content-Type", "application/json");
+          http.addHeader("Accept", "application/json");
+          int httpResponseCode = http.POST(mypayload); 
+
+          if(httpResponseCode>0){
+            if(debug){
+              String response=http.getString();
+              int heap=ESP.getFreeHeap();
+              Serial.print("Server: HTTP code:"+(String)httpResponseCode + "\n" + "Server: "+ response + '\n');
+              //Serial.print(response);
+            }
+            else{/////////////////////////////////////////////////////////////////////////////////////
+              //for some reason if we receive http code 400 the ESP8266 crashes if we run http.getString(). 
+              //This is why we set the server to only send http code 200(which is normally wrong)
+              //and the ESP to run http.getString() only if httpResponseCode==200
+              ////////////////////////////////////////////////////////////////////////////////////////
+              //if(httpResponseCode==200) Serial.println("HTTP:" + (String)httpResponseCode + " " + http.getString());
+              if(httpResponseCode==200) Serial.print(http.getString()+'\n');
+
+              else Serial.print("HTTP:" + (String)httpResponseCode + " BAD REQUEST\n");
+            }
+            //else Serial.println("HTTP:" + (String)ESP.getFreeHeap());
+          }else{
+            if(debug) Serial.print("ESP8266: Error on sending POST: ");
+            else Serial.print("\"Fail on POST\"\n");
+            //Serial.println("Server: " + httpResponseCode);
+          }
+          http.end();
+          }else{
+            if(debug) Serial.print("ESP8266: Error in WiFi connection\n");
+            else Serial.print("\"Fail\"\n");   
+          }
+}
+
+void updateURL(String ReceivedURL,bool clientMode){//if a url is set we use that one. Otherwise we built it from the data
+  if (ReceivedURL==""){
+    if(clientMode){
+      url =  "/data/?";
+      for(int i=0;i<sensorCount;++i){
+        //if(sensorName[i]=="") break; //no need since we have sensorCount
+        url+=sensorName[i];
+        url+="=";
+        url+=sensorValue[i];
+        if(i!=(sensorCount-1))url+="&";
+      }
+    }
+    else url =  "http://" + hostIP + "/api/students/"+teamname+"/sensors/?isReady="+isReady;
+  }  
+  else url=ReceivedURL;
+  //Serial.println(url);
+}
+void searchForCommand(String DataString){//Looks for a command in a line of Data
+      //int startIndex=0,endIndex=0;
+      if(!(DataString.indexOf("ESP:")>=0)){//if sentence doesn't contain ESP: don't answer
+        if(debug) Serial.print("ESP8266: should start with ESP:\n");
+      }
+      else if(DataString.indexOf("APStart")>=0){ //make sure values are set
+        //need server ssid, server pass
+        WiFi.softAP(ssid, password);
+        IPAddress myIP = WiFi.softAPIP();
+        //server.on("/data/", HTTP_GET, serverReceiveData); // when the server receives a request with /data/ in the string then run the handleSentVar function
+        server.begin();
+        serverOnline=true;
+        if(debug){
+            Serial.print("ESP8266: Server IP=");
+            Serial.println(myIP);
+          }
+        else Serial.print("\"Success\"\n");
+      }
+      else if(DataString.indexOf("addSensor:")>=0){ //make sure values are set
+        //need server ssid, server pass
+        String temp=getValue(DataString,"addSensor",'\"','\"');
+        for(int i=0;i<sensorCount;++i){
+          if(temp==sensorName[i]){
+            if(debug) Serial.print("ESP8266: sensor already exists!\n");
+            else Serial.print("\"Fail\"\n");
+            return;
+          }
+        }
+        sensorName[sensorCount]=temp;
+        sensorCount++;
+        if(debug) Serial.print("ESP8266: Sensor "+ temp + " added" + '\n');
+        else Serial.print("\"Success\"\n"); 
+      }
+      
+      else if(DataString.indexOf("baudrate:")>=0){
+        if(getValue(DataString,"baudrate:",'\"','\"')!="noValueFound"){
+          baud=getValue(DataString,"baudrate:",'\"','\"').toInt();
+          if(debug) Serial.print("ESP8266: Changing baud rate to "+(String)baud + '\n');
+          else Serial.print("\"Success\"\n");
+          delay(100); //wait for last characters to be transmitted
+          Serial.end();
+          Serial.begin(baud);
+        }
+      }
+      else if(DataString.indexOf("configuration")>=0){
+          String temp="ESP8266: Configuration:\n";
+          temp+="Baudrate: "+(String)baud+"\n";
+          temp+="YourIP: "+WiFi.localIP().toString()+"\n";
+          temp+="SSID: "+ssid+"\n";
+          temp+="Password: "+password+"\n";
+          temp+="Teamname: "+teamname+"\n";
+          temp+="hostIP: "+hostIP+"\n";
+          temp+="url: "+url+"\n";
+          temp+="Payload: "+receivedPayload+"\n";
+          Serial.print(temp);
+      }
+      else if(DataString.indexOf("clientTransmit")>=0){
+        if (!client.connect(hostIP, httpPort)) {
+          if(debug) Serial.println("ESP8266: client not connected");
+          else Serial.print("\"Fail\"\n");
+        }
+        else if (url==""){
+          if(sensorCount==0){
+            if(debug) Serial.print("ESP8266: No sensors added and no url provided\n");
+            else Serial.print("\"Fail\"\n");
+          } 
+        }
+        else {
+          //Serial.print("ESP8266: url:"+url+"\n");
+          clientTransmitData(url,hostIP,httpPort);
+        }
+      }
+      else if(DataString.indexOf("connect")>=0){
+        //Serial.println("ESP8266: Received command to connect");
+        
+        if(ESP8266connectWiFi(ssid,password,true)) ConnectionStarted=true;
+        else ConnectionStarted=false;
+      }
+      
+      else if(DataString.indexOf("debug:")>=0){
+        String debugString=getValue(DataString,"debug:",'\"','\"');
+        if(debugString=="true") debug=true;
+        else if(debugString=="false") debug=false;
+        else Serial.print("\"Fail\"\n");
+        Serial.print("ESP8266: Debug set to:"+debugString+'\n');
+      }
+      else if(DataString.indexOf("disconnect:")>=0){
+        WiFi.disconnect();
+        WiFi.mode(WIFI_OFF);
+        //WiFi.forceSleepBegin();
+      }
+      else if(DataString.indexOf("getValue:")>=0){
+        //na valw new values bool
+        String temp=getValue(DataString,"getValue:",'\"','\"'); //sensorName
+        bool found=false;
+        for(int i=0; i<sensorCount;++i){
+          if(temp==sensorName[i]){
+            found=true;
+            newValues=false; //caution! If just one is read successful we assume the values have been read.
+            if(debug) Serial.print("ESP8266: "+temp+"=\""+sensorValue[i]+"\"\n");
+            else Serial.print(temp+"=\""+sensorValue[i]+"\"\n");
+          }
+        }
+        if(!found) Serial.print(temp+"=\"not found"+"\"\n");
+      }
+      else if(DataString.indexOf("getAllValues")>=0){
+        newValues=false;
+        for(int i=0; i<sensorCount;++i){
+            if(debug) Serial.print("ESP8266: "+sensorName[i]+"=\""+sensorValue[i]+"\"\n");
+            else Serial.print(sensorName[i]+"=\""+sensorValue[i]+"\"\n");
+          }
+      }
+      else if(DataString.indexOf("help")>=0){
+          String temp="ESP8266: commands list:\n";
+          temp+="addSensor:\"SensorName\" #Add a sensor Name\n";
+          temp+="APStart #Uses the provided SSID and Password to create an Access Point\n";
+          temp+="baudrate: \"Your baudrate\"  #Resets the Serial to the required speed\n";
+          temp+="configuration  #Reports your current configuration\n";
+          temp+="clientTransmit #Sends all SensorValues to the connected server\n";
+          temp+="connect  #Uses the provided SSID and Password to connect to the WiFi network\n";
+          temp+="debug: \"true or false\"  #Every command will send extra debug information if set to true\n";
+          temp+="help  #Lists all commands\n";
+          temp+="getAllValues #Sends the values of all Sensors\n";
+          temp+="getValue:\"SensorName\" #Send the value of the specified Sensor\n";
+          temp+="hostIP: \"Your HostIP\" #Your Host's IP address\n";
+          temp+="password: \"Your Password\" #Password to be used for the connection\n";
+          temp+="payload: [Your payload] #The payload to post to the Host. Must be in brackets\n";
+          temp+="ready: \"true or false\"  #Your Team's status\n";
+          temp+="restart #Restarts the ESP\n";
+          temp+="sensorValue: \"SensorName\"[SensorValue] #saves value to specified sensor.Values shouldnt contain = and , \n";
+          temp+="ssid: \"Your SSID\" #SSID to be used for the connection\n";
+          temp+="teamname: \"Your Teamname\" #Your Team's name\n";
+          temp+="transmit  #Transmits the specified payload to the url\n";
+          temp+="url: \"Your url\"  #The url to transmit to. Example: http:\\\\192.168.1.2:8382\\service\n";
+          temp+="#If you want to set up your own url don't use the commands teamname,HostIP,ready\n";     
+          Serial.print(temp); //Minimize Serial transmits
+      }
+      else if(DataString.indexOf("hostIP:")>=0){
+          hostIP=getValue(DataString,"hostIP:",'\"','\"');
+          if(hostIP!="noValueFound"){
+            updateURL("",false);
+            if(debug)Serial.print("ESP8266: hostIP: "+hostIP+'\n');
+            else Serial.print("\"Success\"\n");
+          }
+      }
+      else if(DataString.indexOf("password")>=0){ //extract password
+        password=getValue(DataString,"password:",'\"','\"');
+        if(password!="noValueFound"){
+          if(debug) Serial.print("ESP8266: Password: "+password+'\n');
+          else Serial.print("\"Success\"\n");
+        }
+      }
+      else if(DataString.indexOf("payload:")>=0){
+        receivedPayload="["+getValue(DataString,"payload:",'[',']')+"]";
+        if(receivedPayload!="[noValueFound]"){
+          if(debug)Serial.print("ESP8266: receivedPayload: "+receivedPayload+'\n');
+          else Serial.print("\"Success\"\n");
+        }
+      }
+      else if(DataString.indexOf("ready:")>=0){
+        isReady=getValue(DataString,"ready:",'\"','\"');
+        if(isReady!="noValueFound"){
+          if((isReady!="true")&&(isReady!="false")){
+            if(debug)Serial.print("ESP8266: Should be ready: \"true\" or ready: \"false\"\n");
+            else Serial.print("\"Fail\"\n");
+            isReady="false";
+          }
+          else{
+            updateURL("",false);
+            if(debug)Serial.print("ESP8266: ready set to:"+isReady+'\n');
+            else Serial.print("\"Success\"\n");
+          }
+        }  
+      }
+      else if(DataString.indexOf("restart")>=0){ //extract ssid
+        ESP.restart();
+      }
+      else if(DataString.indexOf("sensorValue:")>=0){ //sensorValue:"Temperature"=[23.78]
+        //need server ssid, server pass
+        String temp=getValue(DataString,"sensorValue:",'\"','\"'); //sensorName
+        for(int i=0;i<sensorCount;++i){
+          if(temp==sensorName[i]){
+            sensorValue[i]=getValue(DataString,sensorName[i],'[',']'); //sensorValue
+            if(debug) Serial.print("ESP8266: " + sensorValue[i] + " value for " +sensorName[i]+"\n");
+            else Serial.print("\"Success\"\n");
+            updateURL("",true); 
+            return;
+          }
+        }
+        if(debug) Serial.print("ESP8266: Sensor "+ temp + " not found" + '\n');
+        else Serial.print("\"Fail\"\n"); 
+      }
+      else if(DataString.indexOf("ssid:")>=0){ //extract ssid
+        if(ssid!="noValueFound"){
+          ssid=getValue(DataString,"ssid:",'\"','\"');
+          if(debug) Serial.print("ESP8266: SSID: "+ssid+'\n');
+          else Serial.print("\"Success\"\n");
+        }
+      }
+      else if(DataString.indexOf("teamname:")>=0){
+        teamname=getValue(DataString,"teamname:",'\"','\"');
+        if(teamname!="noValueFound"){
+          updateURL("",false);
+          if(debug) Serial.print("ESP8266: Teamname set to:"+teamname+'\n');
+          else Serial.print("\"Success\"\n");
+        }
+      }
+      else if(DataString.indexOf("transmit")>=0){
+          if(teamname=="No team"||teamname==""){
+            if(debug)Serial.print("ESP8266: You must set up your teamname first\n");
+            else Serial.print("\"Fail\"\n");
+            return;
+          }
+          else if(WiFi.status() != WL_CONNECTED){
+            if(debug)Serial.print("ESP8266: You must connect to a WiFi network first\n");
+            else Serial.print("\"Fail\"\n");
+            return;
+          }
+          if(debug)Serial.print("ESP8266: Transmiting Data\n");
+          //else Serial.println("\"Success\"");
+          transmitData(url,hostIP,receivedPayload);
+
+      }
+      else if(DataString.indexOf("url:")>=0){
+        String ReceivedURL=getValue(DataString,"url:",'\"','\"');
+        if(ReceivedURL!="noValueFound"){
+          updateURL(ReceivedURL,false); //doesnt matter if client or not since we receive the url
+          if(debug) Serial.print("ESP8266: URL set to:"+url+'\n');
+          else Serial.print("\"Success\"\n");
+        }
+      }
+      else if(DataString.indexOf("autoTransmit")>=0){
+          Serial.print("ESP8266: Auto Transmiting Data\n");
+          //int mycounter=0;
+          do{
+          //mycounter++;
+          //receivedPayload.replace("\"Counter\",\"value\": 128","\"Counter\",\"value\": "+String(mycounter));
+          transmitData(url,hostIP,receivedPayload);
+          //receivedPayload.replace("\"Counter\",\"value\": "+String(mycounter),"\"Counter\",\"value\": 128");
+          delay(1000);
+          }while(Serial.available()<=0);
+      }      
+      else {
+        if(debug) Serial.print("ESP8266: No command was found\n");
+        else Serial.print("\"Fail\"\n");
+      }
+      
+      
+}
