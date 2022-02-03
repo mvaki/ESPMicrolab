@@ -1,0 +1,32 @@
+- Device chirality and buttons:
+
+      *Top view*	
+	_____
+       |     |
+       | * * |
+       |     |	  (This is the right-handed one)
+       XXXXXXX
+       XXXXXXX	  
+       XXXXXXX	
+       XXXXXXX_____
+       XXXXXXX_____[B1]
+       XXXXXXX
+       XXXXXXX
+	 | |
+	 | |
+	 | |
+         [B2]
+
+
+- To program these particular ESP8266 modules, press "Upload", wait for the "Connecting..." to appear on the terminal. 
+  Then hold the side button [B1] pressed and send a pulse from the [B2] button.
+  After uploading, hit the [B2] button once more to reset.
+
+
+- MAC addresses needed for ESP-NOW:
+    Left-handed MAC:  	EC:FA:BC:AD:ED:F8
+    Right-handed MAC	EC:FA:BC:AD:E3:89
+
+
+
+
