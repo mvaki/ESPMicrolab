@@ -26,10 +26,9 @@
     NOWstart                    -> Starts ESP-NOW communication
     NOWstop                     -> Stops ESP-NOW communication
     NOWsetRole:"Role"           -> Sets device's role (either "Sender" or "Receiver"). Default role is "COMBO"
-    NOWaddPeer:[MAC]            -> Adds paired device with specified MAC address
-    NOWbroadcast                -> Sends all sensor values to peers
-
-    
+    NOWaddPeer:"MAC"            -> Adds paired device with specified MAC address
+    NOWmessage:"MAC"[message]   -> Sends message to particular peer
+    NOWbroadcast                -> Sends all sensor values to peers 
 *
 */
 
@@ -72,13 +71,8 @@ bool serverMode = false;
 //client for access point additions
 WiFiClient wificlient;
 
-uint8_t lhMAC[] = {0xEC, 0xFA, 0xBC, 0xAD, 0xED, 0xF8};
-uint8_t rhMAC[] = {0xEC, 0xFA, 0xBC, 0xAD, 0xE3, 0x89};
-
-uint8_t broadcastAddress[6];
-
 typedef struct message {
-    char sensor[32];
+    char message_info[32];
     int value;
 } message;
 
@@ -303,7 +297,6 @@ void updateURL(String ReceivedURL, bool clientMode) { // If a url is set we use 
 
 // Callback when data is sent
 void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus) {
-  Serial.print("Last Packet Send Status: ");
   if (sendStatus == 0){
     Serial.print("\"Success\"\n");
   }
@@ -314,13 +307,22 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus) {
 
 void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len) {
   memcpy(&received, incomingData, sizeof(received));
-  Serial.print("Bytes received: ");
-  Serial.println(len);
-  Serial.print("Sensor: ");
-  Serial.println(received.sensor);
-  Serial.print("Value: ");
-  Serial.println(received.value);
-  Serial.println();
+  if (debug) {
+    Serial.print("Bytes received: ");
+    Serial.println(len);
+    Serial.print("Info: ");
+    Serial.println(received.message_info);
+    Serial.print("Value: ");
+    Serial.println(received.value);
+  }
+  Serial.print("\"Success\"\n");
+  // Forward message to other peers
+  int stat = esp_now_send(0, (uint8_t *) &received, sizeof(received));
+  if (stat != 0) {
+    if (debug) Serial.println("Failed to forward received message");
+    return;
+  }
+  if (debug) Serial.println("Successfully forwarded message");
 }
 
 // =====================================================================================================================================
@@ -444,7 +446,8 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
         temp += "NOWstop  #Stops ESP-NOW communication\n";
         temp += "NOWsetRole:\"Role\"  #Sets device's role (either \"Sender\" or \"Receiver\"). Default role is peer\n";                     
         temp += "NOWaddPeer:[MAC]  #Adds paired device with specified MAC address\n";
-         temp += "NOWbroadcast  #Sends all sensor values to peers\n";
+        temp += "NOWmessage:\"MAC\"[message]  #Sends message to particular peer\n";
+        temp += "NOWbroadcast  #Sends all sensor values to peers\n";
         Serial.print(temp); // Minimize Serial transmits
     } else if (DataString.indexOf("hostIP:") >= 0) {
         hostIP = getValue(DataString, "hostIP:", '\"', '\"');
@@ -540,9 +543,7 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
         } while (Serial.available() <= 0);
     }
     
-    
-    
-    
+// =====================================================================================================================================    
     
     else if (DataString.indexOf("getMAC") >= 0) {
         Serial.print("ESP8266 Board MAC Address:  ");
@@ -559,9 +560,6 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
           esp_now_register_recv_cb(OnDataRecv);
           // Peer to peer network
           esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
-          // Register peer
-          memcpy(&broadcastAddress, &lhMAC, sizeof lhMAC);
-          esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, 4, NULL, 0);
           Serial.print("\"Success\"\n");
         }
     } else if (DataString.indexOf("NOWstop") >= 0) {
@@ -597,12 +595,12 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
             if (debug) Serial.print("ESP8266: Error setting role\n");
             else Serial.print("\"Fail\"\n");
         }
-    } else if (DataString.indexOf("NOWsend:") >= 0) {
-        NOWvalue = getValue(DataString, "NOWsend:", '[', ']');
+    } else if (DataString.indexOf("NOWmessage:") >= 0) {
+        NOWvalue = getValue(DataString, "NOWmessage:", '[', ']');
         String input = "Input from Serial.";
-        input.toCharArray(sent.sensor, sizeof(sent.sensor));
+        input.toCharArray(sent.message_info, sizeof(sent.message_info));
         sent.value = NOWvalue.toInt();
-        // Send message via ESP-NOW
+        // Send message to all peers via ESP-NOW
         esp_now_send(0, (uint8_t *) &sent, sizeof(sent));
 
         if (NOWvalue != "") {
@@ -613,18 +611,24 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
     } else if (DataString.indexOf("NOWbroadcast") >= 0) {
         int success = 1;
         for (int i = 0; i < sensorCount; ++i) {
-            sensorName[i].toCharArray(sent.sensor, sizeof(sent.sensor));
+            sensorName[i].toCharArray(sent.message_info, sizeof(sent.message_info));
+            // Check for null sensorValue
+            if (sensorValue[i] == "") {
+              if (debug) Serial.print("sensorValue cannot be empty\n");
+              else Serial.print("\"Fail\"\n");
+              return;
+            }
             sent.value = sensorValue[i].toInt();
-            // Send message via ESP-NOW
-            esp_now_send(0, (uint8_t *) &sent, sizeof(sent));
-            delay(10);
+            // Send message to all peers via ESP-NOW
+            int temp = esp_now_send(0, (uint8_t *) &sent, sizeof(sent));
+            success = success || temp;
         }
         if (success != 0) {
           Serial.print("\"Success\"\n");
         }
         else Serial.print("\"Fail\"\n");
     } else if (DataString.indexOf("NOWaddPeer:") >= 0) {
-        String macstr = getValue(DataString, "NOWaddPeer:", '[', ']');
+        String macstr = getValue(DataString, "NOWaddPeer:", '\"', '\"');
         uint8_t mac[6]; 
         char macchar[18];
         macstr.toCharArray(macchar, sizeof(macchar));
@@ -639,7 +643,7 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
           mac[i] = ret;
         }
         // Add peer
-        int stat = esp_now_add_peer(mac, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
+        int stat = esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 4, NULL, 0);
         if (stat == 0) {
             if (debug) Serial.print("ESP8266: Added peer with MAC address: " + macstr + '\n');
             else Serial.print("\"Success\"\n");
