@@ -1,4 +1,11 @@
 /*
+ *  @TODO: Fix connect
+ *  @TODO: Function to return available memory
+ *  @TODO: Include sender's MAC in NOW packet
+ * */
+ 
+
+/*
  *  Instruction index:
  *  
     addSensor:"SensorName"      -> Add a sensor Name
@@ -7,14 +14,14 @@
     configuration               -> Reports your current configuration
     clientTransmit              -> Sends all SensorValues to the connected server
     connect                     -> Uses the provided SSID and Password to connect to the WiFi network
-    debug:"true or false"       -> Every command will send extra debug information if set to true
+    debug:"true" or "false      -> Every command will send extra debug information if set to true
     help                        -> Lists all commands
     getAllValues                -> Sends the values of all Sensors
     getValue:"SensorName"       -> Send the value of the specified Sensor
     hostIP:"Your HostIP"        -> Your Host's IP address
     password:"Your Password"    -> Password to be used for the connection
     payload:[Your payload]      -> The payload to post to the Host. Must be in brackets
-    ready:"true or false"       -> Your Team's status
+    ready:"true" or "false"     -> Your Team's status
     restart                     -> Restarts the ESP
     sensorValue:"Sensor"[Value] -> Saves value to specified sensor. Values shouldn't contain '=' and ',' 
     ssid:"Your SSID"            -> SSID to be used for the connection
@@ -29,6 +36,7 @@
     NOWaddPeer:"MAC"            -> Adds paired device with specified MAC address
     NOWmessage:"MAC"[message]   -> Sends message to particular peer
     NOWbroadcast                -> Sends all sensor values to peers 
+    NOWsave:"true" or "false"   -> Saves the sensor data it receives
 *
 */
 
@@ -63,6 +71,8 @@ String receivedPayload = "[]", inputString = "", isReady = "false";
 bool debug = false, LEDState = false;
 bool newValues = false;
 
+bool saveValues = false;  // If true, values are saved during the onDataRecv callback 
+
 String NOWvalue = "";
 
 WiFiServer server(httpPort);
@@ -72,8 +82,8 @@ bool serverMode = false;
 WiFiClient wificlient;
 
 typedef struct message {
-    char message_info[32];
-    int value;
+    char sensor[32];
+    float value;
 } message;
 
 // Create a struct_message called myData
@@ -308,14 +318,31 @@ void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus) {
 void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len) {
   memcpy(&received, incomingData, sizeof(received));
   if (debug) {
-    Serial.print("Bytes received: ");
-    Serial.println(len);
-    Serial.print("Info: ");
-    Serial.println(received.message_info);
+    Serial.print("Received message:\n");
+    Serial.print("Sensor: ");
+    Serial.println(received.sensor);
     Serial.print("Value: ");
     Serial.println(received.value);
   }
-  Serial.print("\"Success\"\n");
+  else Serial.print("\"Success\"\n");
+
+  bool found = false;
+  if (saveValues) {
+    String sensor = received.sensor;
+    for (int i = 0; i < sensorCount; ++i) {
+      if (sensor == sensorName[i]) {
+        sensorValue[i] = String(received.value);
+        if (debug) Serial.print("ESP8266: Saved new value for " + sensor + "\n");
+        else Serial.print("\"Success\"\n");
+        found = true;
+      }
+    }
+    if (!found) {
+      if (debug) Serial.print("ESP8266: Sensor " + sensor + " not found. Please add sensor name for data to be saved" + '\n');
+      else Serial.print("\"Fail\"\n");
+    }
+  }
+  
   // Forward message to other peers
   int stat = esp_now_send(0, (uint8_t *) &received, sizeof(received));
   if (stat != 0) {
@@ -448,6 +475,7 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
         temp += "NOWaddPeer:[MAC]  #Adds paired device with specified MAC address\n";
         temp += "NOWmessage:\"MAC\"[message]  #Sends message to particular peer\n";
         temp += "NOWbroadcast  #Sends all sensor values to peers\n";
+        temp += "NOWsave:\"true or false\"  #Saves the sensor data it receives\n";
         Serial.print(temp); // Minimize Serial transmits
     } else if (DataString.indexOf("hostIP:") >= 0) {
         hostIP = getValue(DataString, "hostIP:", '\"', '\"');
@@ -546,7 +574,6 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
 // =====================================================================================================================================    
     
     else if (DataString.indexOf("getMAC") >= 0) {
-        Serial.print("ESP8266 Board MAC Address:  ");
         Serial.println(WiFi.macAddress());
     } else if (DataString.indexOf("NOWstart") >= 0) {
         if (debug) Serial.print("ESP8266: Starting ESP-NOW protocol in a peer-to-peer network...\n"); 
@@ -598,8 +625,8 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
     } else if (DataString.indexOf("NOWmessage:") >= 0) {
         NOWvalue = getValue(DataString, "NOWmessage:", '[', ']');
         String input = "Input from Serial.";
-        input.toCharArray(sent.message_info, sizeof(sent.message_info));
-        sent.value = NOWvalue.toInt();
+        input.toCharArray(sent.sensor, sizeof(sent.sensor));
+        sent.value = NOWvalue.toFloat();
         // Send message to all peers via ESP-NOW
         esp_now_send(0, (uint8_t *) &sent, sizeof(sent));
 
@@ -611,22 +638,19 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
     } else if (DataString.indexOf("NOWbroadcast") >= 0) {
         int success = 1;
         for (int i = 0; i < sensorCount; ++i) {
-            sensorName[i].toCharArray(sent.message_info, sizeof(sent.message_info));
+            sensorName[i].toCharArray(sent.sensor, sizeof(sent.sensor));
             // Check for null sensorValue
             if (sensorValue[i] == "") {
               if (debug) Serial.print("sensorValue cannot be empty\n");
               else Serial.print("\"Fail\"\n");
               return;
             }
-            sent.value = sensorValue[i].toInt();
+            sent.value = sensorValue[i].toFloat();
             // Send message to all peers via ESP-NOW
             int temp = esp_now_send(0, (uint8_t *) &sent, sizeof(sent));
             success = success || temp;
         }
-        if (success != 0) {
-          Serial.print("\"Success\"\n");
-        }
-        else Serial.print("\"Fail\"\n");
+        if (success == 0) Serial.print("\"Fail\"\n");
     } else if (DataString.indexOf("NOWaddPeer:") >= 0) {
         String macstr = getValue(DataString, "NOWaddPeer:", '\"', '\"');
         uint8_t mac[6]; 
@@ -652,5 +676,20 @@ void searchForCommand(String DataString) {    // Looks for a command in a line o
             if (debug) Serial.print("ESP8266: Error adding peer with MAC address: " + macstr + '\n');
             else Serial.print("\"Fail\"\n");
         }
+    }
+    else if (DataString.indexOf("NOWsave:") >= 0) {
+        String save = getValue(DataString, "NOWsave:", '\"', '\"');
+        if (save == "true") saveValues = true;
+        else if (save == "false") saveValues = false;
+        else {
+          Serial.print("\"Fail\"\n");
+          return;
+        }
+        if (debug) Serial.print("ESP8266: Sensor values will be saved on this node\n");
+        else Serial.print("\"Success\"\n");
+    } 
+    else {
+      if (debug) Serial.print("Command not found.\n");
+      else Serial.print("\"Fail\"\n");
     }
 }
